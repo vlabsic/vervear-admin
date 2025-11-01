@@ -66,13 +66,20 @@ export async function POST(request: NextRequest) {
 
     const imageDataArray = furnitureImages.map((img: string) => img.split(",")[1])
 
-    const angleImageDataMap: Record<number, Record<string, string>> = {}
+    const angleImageDataMap: Record<number, Record<string, { data: string; mimeType: string }>> = {}
     if (angleImages) {
       for (const [mainImageIndex, angles] of Object.entries(angleImages)) {
         angleImageDataMap[Number.parseInt(mainImageIndex)] = {}
         for (const [angleType, angleImageUrl] of Object.entries(angles as Record<string, string>)) {
           if (angleImageUrl) {
-            angleImageDataMap[Number.parseInt(mainImageIndex)][angleType] = angleImageUrl.split(",")[1]
+            const mimeTypeMatch = angleImageUrl.match(/^data:([^;]+);base64,/)
+            const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : "image/jpeg"
+            const base64Data = angleImageUrl.split(",")[1]
+
+            angleImageDataMap[Number.parseInt(mainImageIndex)][angleType] = {
+              data: base64Data,
+              mimeType: mimeType,
+            }
           }
         }
       }
@@ -227,12 +234,12 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
     if (Object.keys(angleImageDataMap).length > 0) {
       console.log("[v0] Adding angle images to Gemini API request for enhanced material understanding")
       for (const [mainImageIndex, angles] of Object.entries(angleImageDataMap)) {
-        for (const [angleType, angleImageData] of Object.entries(angles)) {
+        for (const [angleType, angleImageInfo] of Object.entries(angles)) {
           console.log(`[v0] Adding ${angleType} angle for furniture ${mainImageIndex}`)
           parts.push({
             inline_data: {
-              mime_type: "image/jpeg",
-              data: angleImageData,
+              mime_type: angleImageInfo.mimeType,
+              data: angleImageInfo.data,
             },
           })
         }
