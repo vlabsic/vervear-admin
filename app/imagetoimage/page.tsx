@@ -281,7 +281,6 @@ const ImageToImagePage = () => {
     }
   }, [showGeneratingModal, apiCompleted])
 
-  // Add handler functions
   const handleGenerateBackground = async () => {
     if (!uploadedImages.length || !backgroundDescription.trim()) {
       alert("Please upload at least one image and provide a background description")
@@ -314,24 +313,39 @@ const ImageToImagePage = () => {
       let base64Images: string[]
       try {
         base64Images = await Promise.all(
-          uploadedImages.map(async (imageUrl) => {
-            const response = await fetch(imageUrl)
-            if (!response.ok) {
-              throw new Error(`Failed to fetch image: ${response.statusText}`)
+          uploadedImages.map(async (imageUrl, index) => {
+            try {
+              console.log(`[v0] Converting image ${index + 1}/${uploadedImages.length} to base64`)
+              const response = await fetch(imageUrl)
+              if (!response.ok) {
+                throw new Error(`Failed to fetch image ${index + 1}: ${response.statusText}`)
+              }
+              const blob = await response.blob()
+              return new Promise<string>((resolve, reject) => {
+                const reader = new FileReader()
+                reader.onloadend = () => {
+                  const result = reader.result as string
+                  if (!result || !result.startsWith("data:image/")) {
+                    reject(new Error(`Invalid image data for image ${index + 1}`))
+                  } else {
+                    resolve(result)
+                  }
+                }
+                reader.onerror = () => reject(new Error(`Failed to read image ${index + 1}`))
+                reader.readAsDataURL(blob)
+              })
+            } catch (imageError) {
+              console.error(`[v0] Error processing image ${index + 1}:`, imageError)
+              throw imageError
             }
-            const blob = await response.blob()
-            return new Promise<string>((resolve, reject) => {
-              const reader = new FileReader()
-              reader.onloadend = () => resolve(reader.result as string)
-              reader.onerror = () => reject(new Error("Failed to read image file"))
-              reader.readAsDataURL(blob)
-            })
           }),
         )
         console.log(`[v0] Successfully converted ${base64Images.length} images to base64`)
       } catch (conversionError) {
         console.error("[v0] Error converting images to base64:", conversionError)
-        throw new Error("Failed to process uploaded images. Please try again.")
+        throw new Error(
+          `Failed to process uploaded images: ${conversionError instanceof Error ? conversionError.message : "Unknown error"}`,
+        )
       }
 
       console.log(`[v0] Calling API for ${imageCount} variations`)
@@ -365,66 +379,147 @@ const ImageToImagePage = () => {
             try {
               console.log(`[v0] Generating variation ${i + 1}/${imageCount}`)
 
-              const apiResponse = await fetch("/api/generate-background", {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                  images: base64Images,
-                  prompt: variationPrompt,
-                  imageCount: 1,
-                  furnitureCount: uploadedImages.length,
-                  backgroundType:
-                    selectedFurnitureType !== "Select your background" ? selectedFurnitureType : undefined,
-                  selectedStyle: selectedStyle,
-                  includePropFurniture: includePropFurniture,
-                  angleImages: angleImages,
-                }),
-              })
+              const controller = new AbortController()
+              const timeoutId = setTimeout(() => {
+                controller.abort()
+                console.error(`[v0] Request timeout for variation ${i + 1}`)
+              }, 90000) // 90 second timeout
+
+              let apiResponse
+              try {
+                apiResponse = await fetch("/api/generate-background", {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    images: base64Images,
+                    prompt: variationPrompt,
+                    imageCount: 1,
+                    furnitureCount: uploadedImages.length,
+                    backgroundType:
+                      selectedFurnitureType !== "Select your background" ? selectedFurnitureType : undefined,
+                    selectedStyle: selectedStyle,
+                    includePropFurniture: includePropFurniture,
+                    angleImages: angleImages,
+                  }),
+                  signal: controller.signal,
+                })
+                clearTimeout(timeoutId)
+              } catch (fetchError: any) {
+                clearTimeout(timeoutId)
+                console.error(`[v0] Network error for variation ${i + 1}:`, fetchError)
+
+                if (fetchError.name === "AbortError") {
+                  throw new Error("Request timed out. The server took too long to respond. Please try again.")
+                }
+
+                throw new Error(
+                  `Network error: ${fetchError.message || "Unable to connect to server. Please check your internet connection."}`,
+                )
+              }
 
               console.log(`[v0] API response status for variation ${i + 1}:`, apiResponse.status)
+              console.log(
+                `[v0] API response content-type for variation ${i + 1}:`,
+                apiResponse.headers.get("content-type"),
+              )
 
               if (!apiResponse.ok) {
                 let errorMessage = "Failed to generate image"
 
                 try {
                   const contentType = apiResponse.headers.get("content-type")
-                  console.log(`[v0] Error response content-type:`, contentType)
 
                   if (contentType && contentType.includes("application/json")) {
                     const errorData = await apiResponse.json()
                     errorMessage = errorData.error || errorMessage
-                    console.error("[v0] API error (JSON):", errorData)
+                    console.error(`[v0] API error (JSON) for variation ${i + 1}:`, errorData)
+
+                    // Provide more specific error messages based on status code
+                    if (apiResponse.status === 403) {
+                      errorMessage = "Image limit exceeded. Please subscribe or purchase more images."
+                    } else if (apiResponse.status === 400) {
+                      errorMessage = errorData.error || "Invalid request. Please check your inputs and try again."
+                    } else if (apiResponse.status === 500) {
+                      errorMessage = errorData.error || "Server error occurred. Please try again in a few moments."
+                    } else if (apiResponse.status === 504) {
+                      errorMessage = "Request timeout. Please try again with fewer images or a simpler prompt."
+                    }
                   } else {
                     const errorText = await apiResponse.text()
-                    console.error("[v0] API error (non-JSON):", errorText.substring(0, 200))
-                    errorMessage = "Server returned an invalid response. Please try again."
+                    console.error(`[v0] API error (non-JSON) for variation ${i + 1}:`, errorText.substring(0, 500))
+                    console.error(`[v0] Full response headers:`, Object.fromEntries(apiResponse.headers.entries()))
+
+                    // More specific error message for non-JSON responses
+                    if (apiResponse.status === 502 || apiResponse.status === 503) {
+                      errorMessage = "Service temporarily unavailable. Please try again in a few moments."
+                    } else if (apiResponse.status === 504) {
+                      errorMessage = "Request timeout. Please try again."
+                    } else {
+                      errorMessage = `Server error (${apiResponse.status}). Please try again.`
+                    }
                   }
                 } catch (parseError) {
-                  console.error("[v0] Failed to parse error response:", parseError)
-                  errorMessage = "Unable to process server response. Please try again."
+                  console.error(`[v0] Failed to parse error response for variation ${i + 1}:`, parseError)
+                  errorMessage = `Unable to process server response (status ${apiResponse.status}). Please try again.`
                 }
 
                 throw new Error(errorMessage)
               }
 
+              let data
               try {
-                const data = await apiResponse.json()
+                const responseText = await apiResponse.text()
+                console.log(
+                  `[v0] Raw response for variation ${i + 1} (first 200 chars):`,
+                  responseText.substring(0, 200),
+                )
+
+                data = JSON.parse(responseText)
                 console.log(`[v0] Successfully parsed response for variation ${i + 1}`)
-
-                if (!data.images || !Array.isArray(data.images) || data.images.length === 0) {
-                  console.error("[v0] Invalid response structure:", data)
-                  throw new Error("Server returned invalid image data")
-                }
-
-                return data.images[0]
               } catch (parseError) {
-                console.error("[v0] Failed to parse success response:", parseError)
+                console.error(`[v0] Failed to parse success response for variation ${i + 1}:`, parseError)
                 throw new Error("Invalid response format from server. Please try again.")
               }
+
+              if (!data) {
+                console.error(`[v0] Empty response data for variation ${i + 1}`)
+                throw new Error("Server returned empty response. Please try again.")
+              }
+
+              if (!data.images) {
+                console.error(`[v0] Missing images array in response for variation ${i + 1}:`, data)
+                throw new Error("Server response missing image data. Please try again.")
+              }
+
+              if (!Array.isArray(data.images)) {
+                console.error(`[v0] Images is not an array for variation ${i + 1}:`, typeof data.images)
+                throw new Error("Invalid image data format from server. Please try again.")
+              }
+
+              if (data.images.length === 0) {
+                console.error(`[v0] Empty images array for variation ${i + 1}`)
+                throw new Error("Server returned no images. Please try again.")
+              }
+
+              const imageData = data.images[0]
+              if (!imageData || typeof imageData !== "string") {
+                console.error(`[v0] Invalid image data type for variation ${i + 1}:`, typeof imageData)
+                throw new Error("Invalid image data received from server. Please try again.")
+              }
+
+              if (!imageData.startsWith("data:image/")) {
+                console.error(`[v0] Image data doesn't start with data:image/ for variation ${i + 1}`)
+                throw new Error("Invalid image format received from server. Please try again.")
+              }
+
+              console.log(`[v0] Successfully validated image data for variation ${i + 1}`)
+              return imageData
             } catch (error) {
               console.error(`[v0] Error generating variation ${i + 1}:`, error)
+              console.error(`[v0] Error type:`, error instanceof Error ? error.constructor.name : typeof error)
+              console.error(`[v0] Error message:`, error instanceof Error ? error.message : String(error))
               throw error
             }
           })(),
@@ -433,30 +528,40 @@ const ImageToImagePage = () => {
 
       console.log("[v0] Waiting for all variations to complete...")
       const images = await Promise.all(generatedImagePromises)
-      const validImages = images.filter((img) => img !== null && img !== undefined)
+      const validImages = images.filter((img) => img !== null && img !== undefined && typeof img === "string")
 
       console.log("[v0] Generated images received:", validImages.length, "out of", imageCount, "requested")
 
-      if (validImages.length > 0) {
-        const newImagesLeft = Math.max(0, imagesLeft - validImages.length)
-        console.log("[v0] Deducting images. Before:", imagesLeft, "After:", newImagesLeft)
-        setImagesLeft(newImagesLeft)
-
-        setApiCompleted(true)
-        setGeneratedImages(validImages)
-        setShowGeneratedImages(true)
-        setShowGeneratingModal(false)
-
-        console.log("[v0] Image generation completed successfully")
-      } else {
-        throw new Error("No valid images were generated")
+      if (validImages.length === 0) {
+        throw new Error("No valid images were generated. Please try again.")
       }
+
+      if (validImages.length < imageCount) {
+        console.warn(`[v0] Only ${validImages.length} out of ${imageCount} images were generated successfully`)
+      }
+
+      const newImagesLeft = Math.max(0, imagesLeft - validImages.length)
+      console.log("[v0] Deducting images. Before:", imagesLeft, "After:", newImagesLeft)
+      setImagesLeft(newImagesLeft)
+
+      setApiCompleted(true)
+      setGeneratedImages(validImages)
+      setShowGeneratedImages(true)
+      setShowGeneratingModal(false)
+
+      console.log("[v0] Image generation completed successfully")
     } catch (error) {
       console.error("[v0] Error in handleGenerateBackground:", error)
+      console.error("[v0] Error type:", error instanceof Error ? error.constructor.name : typeof error)
+      console.error("[v0] Error message:", error instanceof Error ? error.message : String(error))
       console.error("[v0] Error stack:", error instanceof Error ? error.stack : "No stack trace")
 
       const errorMessage = error instanceof Error ? error.message : "Unknown error occurred"
-      alert(`Failed to generate images: ${errorMessage}`)
+
+      alert(
+        `Failed to generate images: ${errorMessage}\n\nPlease try again. If the problem persists, try:\n- Using fewer images\n- Simplifying your prompt\n- Checking your internet connection`,
+      )
+
       setShowGeneratingModal(false)
       setApiCompleted(false)
     }
