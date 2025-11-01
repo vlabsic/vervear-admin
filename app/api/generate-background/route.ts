@@ -16,7 +16,7 @@ function setImagesLeftCookie(response: NextResponse, imagesLeft: number): void {
 
 export async function POST(request: NextRequest) {
   try {
-    const { images, image, prompt, imageCount, furnitureCount, backgroundType, includePropFurniture } =
+    const { images, image, prompt, imageCount, furnitureCount, backgroundType, includePropFurniture, angleImages } =
       await request.json()
 
     const currentImagesLeft = getImagesLeftFromCookie(request)
@@ -66,8 +66,35 @@ export async function POST(request: NextRequest) {
 
     const imageDataArray = furnitureImages.map((img: string) => img.split(",")[1])
 
+    const angleImageDataMap: Record<number, Record<string, string>> = {}
+    if (angleImages) {
+      for (const [mainImageIndex, angles] of Object.entries(angleImages)) {
+        angleImageDataMap[Number.parseInt(mainImageIndex)] = {}
+        for (const [angleType, angleImageUrl] of Object.entries(angles as Record<string, string>)) {
+          if (angleImageUrl) {
+            angleImageDataMap[Number.parseInt(mainImageIndex)][angleType] = angleImageUrl.split(",")[1]
+          }
+        }
+      }
+    }
+
     const backgroundContext = backgroundType ? `in a ${backgroundType.toLowerCase()} setting` : ""
     const environmentDescription = backgroundContext ? `${prompt} ${backgroundContext}` : prompt
+
+    const angleImagesContext =
+      Object.keys(angleImageDataMap).length > 0
+        ? `\n\nADDITIONAL REFERENCE IMAGES PROVIDED:
+- You have been provided with additional angle views (Front, Back, Left, Right) of the furniture
+- Use these angle images as CRITICAL REFERENCE to understand:
+  * The exact material composition and texture of the furniture
+  * Surface finishes, grain patterns, and material properties
+  * Color accuracy and tonal variations across different angles
+  * Construction details and joinery
+  * Dimensional accuracy and proportions from multiple perspectives
+- These angle views are ESSENTIAL for maintaining material and texture fidelity
+- Ensure the staged furniture matches the materials shown in ALL reference angles
+- Pay special attention to how light interacts with the materials shown in the angle views`
+        : ""
 
     const backgroundEmphasis = backgroundType
       ? `\n\nCRITICAL BACKGROUND REQUIREMENT:\n- The furniture MUST be staged in a ${backgroundType.toUpperCase()} environment\n- The setting should clearly represent a ${backgroundType.toLowerCase()} space\n- All background elements must be appropriate for a ${backgroundType.toLowerCase()}\n- The ${backgroundType.toLowerCase()} setting is NON-NEGOTIABLE and must be clearly visible`
@@ -92,7 +119,7 @@ export async function POST(request: NextRequest) {
 
     const fullPrompt =
       numFurniture === 1
-        ? `You are a professional furniture staging AI. Your task is to place the furniture shown in the reference image into the following environment: ${environmentDescription}${backgroundEmphasis}
+        ? `You are a professional furniture staging AI. Your task is to place the furniture shown in the reference image into the following environment: ${environmentDescription}${backgroundEmphasis}${angleImagesContext}
 
 CRITICAL REQUIREMENTS:
 - Keep the furniture EXACTLY as it appears in the reference image
@@ -134,7 +161,7 @@ IMAGE FORMAT REQUIREMENTS:
 Stage the furniture professionally in the described environment with perfect composition balance.
 
 Generate a photorealistic 1024x1024 pixel image with the furniture staged in: ${environmentDescription}`
-        : `You are a professional furniture staging AI. Your task is to analyze ${numFurniture} furniture pieces shown in the reference images and stage them together in the following environment: ${environmentDescription}${backgroundEmphasis}
+        : `You are a professional furniture staging AI. Your task is to analyze ${numFurniture} furniture pieces shown in the reference images and stage them together in the following environment: ${environmentDescription}${backgroundEmphasis}${angleImagesContext}
 
 CRITICAL REQUIREMENTS FOR EACH FURNITURE PIECE:
 - First, carefully analyze each furniture piece to understand what it is (chair, sofa, table, etc.)
@@ -188,7 +215,6 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
 
     const parts: any[] = [{ text: fullPrompt }]
 
-    // Add all furniture images to the request
     imageDataArray.forEach((imageData: string) => {
       parts.push({
         inline_data: {
@@ -198,39 +224,100 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
       })
     })
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: parts,
+    if (Object.keys(angleImageDataMap).length > 0) {
+      console.log("[v0] Adding angle images to Gemini API request for enhanced material understanding")
+      for (const [mainImageIndex, angles] of Object.entries(angleImageDataMap)) {
+        for (const [angleType, angleImageData] of Object.entries(angles)) {
+          console.log(`[v0] Adding ${angleType} angle for furniture ${mainImageIndex}`)
+          parts.push({
+            inline_data: {
+              mime_type: "image/jpeg",
+              data: angleImageData,
             },
-          ],
-          generationConfig: {
-            temperature: 0.4,
-            topK: 32,
-            topP: 1,
-            maxOutputTokens: 4096,
-          },
-        }),
-      },
-    )
-
-    if (!response.ok) {
-      const errorData = await response.json()
-      console.error("[v0] Gemini API error:", JSON.stringify(errorData, null, 2))
-      return NextResponse.json({ error: "Failed to generate image", details: errorData }, { status: response.status })
+          })
+        }
+      }
     }
 
-    const data = await response.json()
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout
+
+    let response
+    try {
+      response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: parts,
+              },
+            ],
+            generationConfig: {
+              temperature: 0.4,
+              topK: 32,
+              topP: 1,
+              maxOutputTokens: 4096,
+            },
+          }),
+          signal: controller.signal,
+        },
+      )
+    } catch (fetchError: any) {
+      clearTimeout(timeoutId)
+      console.error("[v0] Fetch error:", fetchError)
+
+      if (fetchError.name === "AbortError") {
+        return NextResponse.json(
+          { error: "Request timeout. Please try again with fewer images or a simpler prompt." },
+          { status: 504 },
+        )
+      }
+
+      return NextResponse.json({ error: "Network error. Please check your connection and try again." }, { status: 500 })
+    }
+
+    clearTimeout(timeoutId)
+
+    if (!response.ok) {
+      let errorData
+      const contentType = response.headers.get("content-type")
+
+      try {
+        if (contentType && contentType.includes("application/json")) {
+          errorData = await response.json()
+        } else {
+          const errorText = await response.text()
+          errorData = { message: errorText }
+        }
+      } catch (parseError) {
+        errorData = { message: "Failed to parse error response from Gemini API" }
+      }
+
+      console.error("[v0] Gemini API error:", JSON.stringify(errorData, null, 2))
+      return NextResponse.json(
+        { error: "Failed to generate image. Please try again.", details: errorData },
+        { status: response.status },
+      )
+    }
+
+    let data
+    try {
+      data = await response.json()
+    } catch (parseError) {
+      console.error("[v0] Failed to parse Gemini API response:", parseError)
+      return NextResponse.json(
+        { error: "Invalid response from image generation service. Please try again." },
+        { status: 500 },
+      )
+    }
+
     console.log("[v0] Gemini API response:", JSON.stringify(data, null, 2))
 
-    // Extract the generated image from the response
     if (data.candidates && data.candidates[0]?.content?.parts) {
       const imageParts = data.candidates[0].content.parts.filter((part: any) => part.inlineData)
 
@@ -258,11 +345,16 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
       }
     }
 
-    // If no image data found, return error
     console.error("[v0] No image data in response")
     return NextResponse.json({ error: "No image generated", details: data }, { status: 500 })
   } catch (error) {
     console.error("[v0] Error in generate-background API:", error)
-    return NextResponse.json({ error: "Internal server error", details: String(error) }, { status: 500 })
+    return NextResponse.json(
+      {
+        error: "Internal server error. Please try again.",
+        details: error instanceof Error ? error.message : String(error),
+      },
+      { status: 500 },
+    )
   }
 }

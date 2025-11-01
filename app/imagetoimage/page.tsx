@@ -17,6 +17,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Shuffle,
+  Minus,
 } from "lucide-react"
 import confetti from "canvas-confetti"
 import Link from "next/link"
@@ -171,6 +172,10 @@ const ImageToImagePage = () => {
     return 10
   })
   const [showLimitModal, setShowLimitModal] = useState(false)
+
+  const [expandedAngles, setExpandedAngles] = useState<Set<number>>(new Set())
+  const [angleImages, setAngleImages] = useState<Record<number, Record<string, string>>>({})
+  const angleFileInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
 
   const creditsByCount: Record<number, number> = { 1: 10, 2: 25, 3: 40, 4: 50 }
   const credits = creditsByCount[imageCount] ?? 10
@@ -360,17 +365,40 @@ const ImageToImagePage = () => {
               imageCount: 1,
               furnitureCount: uploadedImages.length,
               backgroundType: selectedFurnitureType !== "Select your background" ? selectedFurnitureType : undefined,
-              selectedStyle: selectedStyle, // Pass selected style to API
-              includePropFurniture: includePropFurniture, // Pass prop furniture toggle state to API
+              selectedStyle: selectedStyle,
+              includePropFurniture: includePropFurniture,
+              angleImages: angleImages, // Pass angle images data to the API
             }),
           }).then(async (apiResponse) => {
             if (!apiResponse.ok) {
-              const errorData = await apiResponse.json()
-              console.error("[v0] API error:", errorData)
-              throw new Error(errorData.error || "Failed to generate image")
+              let errorMessage = "Failed to generate image"
+
+              try {
+                const contentType = apiResponse.headers.get("content-type")
+                if (contentType && contentType.includes("application/json")) {
+                  const errorData = await apiResponse.json()
+                  errorMessage = errorData.error || errorMessage
+                  console.error("[v0] API error:", errorData)
+                } else {
+                  const errorText = await apiResponse.text()
+                  console.error("[v0] API error (non-JSON):", errorText)
+                  errorMessage = "Server returned an invalid response. Please try again."
+                }
+              } catch (parseError) {
+                console.error("[v0] Failed to parse error response:", parseError)
+                errorMessage = "Unable to process server response. Please try again."
+              }
+
+              throw new Error(errorMessage)
             }
-            const data = await apiResponse.json()
-            return data.images?.[0] || null
+
+            try {
+              const data = await apiResponse.json()
+              return data.images?.[0] || null
+            } catch (parseError) {
+              console.error("[v0] Failed to parse success response:", parseError)
+              throw new Error("Invalid response format from server. Please try again.")
+            }
           }),
         )
       }
@@ -674,6 +702,109 @@ const ImageToImagePage = () => {
   // Ref for background description textarea
   const backgroundDescriptionRef = useRef<HTMLTextAreaElement>(null)
 
+  const toggleAngles = (imageIndex: number) => {
+    setExpandedAngles((prev) => {
+      const newSet = new Set(prev)
+      if (newSet.has(imageIndex)) {
+        newSet.delete(imageIndex)
+      } else {
+        newSet.add(imageIndex)
+      }
+      return newSet
+    })
+  }
+
+  const handleAngleImageUpload = (mainImageIndex: number, angleType: string, file: File) => {
+    if (file.type.startsWith("image/")) {
+      const imageUrl = URL.createObjectURL(file)
+      setAngleImages((prev) => ({
+        ...prev,
+        [mainImageIndex]: {
+          ...(prev[mainImageIndex] || {}),
+          [angleType]: imageUrl,
+        },
+      }))
+    }
+  }
+
+  const removeAngleImage = (mainImageIndex: number, angleType: string) => {
+    setAngleImages((prev) => {
+      const newAngles = { ...prev }
+      if (newAngles[mainImageIndex]) {
+        const { [angleType]: removed, ...rest } = newAngles[mainImageIndex]
+        newAngles[mainImageIndex] = rest
+      }
+      return newAngles
+    })
+  }
+
+  const AngleUploadCard = ({
+    label,
+    imageUrl,
+    onUpload,
+    onRemove,
+  }: {
+    label: string
+    imageUrl?: string
+    onUpload: (file: File) => void
+    onRemove: () => void
+  }) => {
+    const inputRef = useRef<HTMLInputElement>(null)
+    const [isHovered, setIsHovered] = useState(false)
+
+    return (
+      <div className="relative flex flex-col items-center gap-1">
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            if (file) {
+              onUpload(file)
+            }
+            if (e.target) {
+              e.target.value = ""
+            }
+          }}
+        />
+        <button
+          onClick={() => inputRef.current?.click()}
+          onMouseEnter={() => setIsHovered(true)}
+          onMouseLeave={() => setIsHovered(false)}
+          className="w-full aspect-square border-2 border-dashed border-[#71717a] rounded-lg bg-white hover:border-[#FF5E1A] hover:bg-[#FF5E1A]/5 transition-colors flex items-center justify-center relative overflow-hidden"
+        >
+          {imageUrl ? (
+            <>
+              <img
+                src={imageUrl || "/placeholder.svg"}
+                alt={label}
+                className="w-full h-full object-cover absolute inset-0"
+              />
+              {isHovered && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onRemove()
+                  }}
+                  className="absolute inset-0 flex items-center justify-center bg-black/40 transition-opacity z-10"
+                >
+                  <div className="p-2 bg-black/60 hover:bg-black/80 rounded-full">
+                    <X className="h-4 w-4 text-white" />
+                  </div>
+                </button>
+              )}
+            </>
+          ) : (
+            <Plus className="h-5 w-5 text-[#71717a]" />
+          )}
+        </button>
+        <span className="text-xs text-[#71717a]">{label}</span>
+      </div>
+    )
+  }
+
   const handleResetApp = () => {
     setUploadedImages([])
     setGeneratedImages([])
@@ -689,6 +820,9 @@ const ImageToImagePage = () => {
     setShowGeneratingModal(false)
     setCountdown(55)
     setApiCompleted(false)
+    // Reset angles state
+    setExpandedAngles(new Set())
+    setAngleImages({})
   }
 
   const handlePreviousOriginalImage = () => {
@@ -999,7 +1133,7 @@ const ImageToImagePage = () => {
                 </div>
               </div>
             ) : uploadedImages.length === 1 ? (
-              /* Single Image - Full Size */
+              /* Single Image - Full Size with Angles */
               <div className="w-full h-full relative">
                 <img
                   src={uploadedImages[0] || "/placeholder.svg"}
@@ -1012,6 +1146,38 @@ const ImageToImagePage = () => {
                 >
                   <X className="h-6 w-6 text-white" />
                 </button>
+
+                <div className="absolute bottom-4 left-4 flex flex-col items-start gap-2">
+                  {expandedAngles.has(0) && (
+                    <div className="flex flex-col gap-2 mb-2">
+                      {["Front", "Back", "Left", "Right"].map((angleType) => (
+                        <div key={angleType} className="w-16">
+                          <AngleUploadCard
+                            label={angleType}
+                            imageUrl={angleImages[0]?.[angleType]}
+                            onUpload={(file) => handleAngleImageUpload(0, angleType, file)}
+                            onRemove={() => removeAngleImage(0, angleType)}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={() => toggleAngles(0)}
+                    className="p-3 bg-[#52525b] hover:bg-[#71717a] rounded-full transition-colors"
+                  >
+                    {expandedAngles.has(0) ? (
+                      <Minus className="h-5 w-5 text-white" />
+                    ) : (
+                      <Plus className="h-5 w-5 text-white" />
+                    )}
+                  </button>
+                  <div className="text-center">
+                    <div className="text-xs text-[#71717a] font-medium">Angles</div>
+                    <div className="text-[10px] text-[#71717a]">(Optional)</div>
+                  </div>
+                </div>
 
                 {/* Drag overlay for additional images */}
                 {isDragging && uploadedImages.length < 4 && (
@@ -1026,7 +1192,7 @@ const ImageToImagePage = () => {
                 )}
               </div>
             ) : (
-              /* Multiple Images - Grid Layout */
+              /* Multiple Images - Grid Layout with Angles */
               <div
                 className={`w-full h-full grid gap-2 p-4 ${
                   uploadedImages.length === 2
@@ -1038,9 +1204,7 @@ const ImageToImagePage = () => {
                   <div
                     key={index}
                     className={`relative rounded-lg overflow-hidden bg-[#f4f4f5] ${
-                      uploadedImages.length === 2
-                        ? "" // Remove span class for vertical stacking
-                        : getImageSpanClass(index, uploadedImages.length)
+                      uploadedImages.length === 2 ? "" : getImageSpanClass(index, uploadedImages.length)
                     }`}
                   >
                     <img
@@ -1050,10 +1214,36 @@ const ImageToImagePage = () => {
                     />
                     <button
                       onClick={() => removeImage(index)}
-                      className="absolute top-2 right-2 p-1 bg-black/50 hover:bg-black/70 rounded-full transition-colors"
+                      className="absolute top-2 right-2 p-1 bg-black/50 hover:bg-black/70 rounded-full transition-colors z-10"
                     >
                       <X className="h-4 w-4 text-white" />
                     </button>
+
+                    <button
+                      onClick={() => toggleAngles(index)}
+                      className="absolute bottom-2 right-2 p-2 bg-black/50 hover:bg-black/70 rounded-full transition-colors z-10"
+                    >
+                      {expandedAngles.has(index) ? (
+                        <Minus className="h-4 w-4 text-white" />
+                      ) : (
+                        <Plus className="h-4 w-4 text-white" />
+                      )}
+                    </button>
+
+                    {expandedAngles.has(index) && (
+                      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-2 z-10">
+                        {["Front", "Back", "Left", "Right"].map((angleType) => (
+                          <div key={angleType} className="w-12">
+                            <AngleUploadCard
+                              label={angleType}
+                              imageUrl={angleImages[index]?.[angleType]}
+                              onUpload={(file) => handleAngleImageUpload(index, angleType, file)}
+                              onRemove={() => removeAngleImage(index, angleType)}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1061,10 +1251,10 @@ const ImageToImagePage = () => {
 
             {/* Upload More Photos Button - Fixed Position - Only show when no generated images */}
             {!showGeneratedImages && uploadedImages.length > 0 && uploadedImages.length < 4 && (
-              <div className="absolute bottom-4 right-4 flex flex-col items-end gap-2">
+              <div className="absolute bottom-4 right-4 flex flex-col items-center gap-2">
                 <Button
                   variant="secondary"
-                  className="bg-[#18181b] text-[#ffffff] hover:bg-[#3f3f46]"
+                  className="bg-[#18181b] text-[#ffffff] hover:bg-[#3f3f46] gap-1"
                   onClick={(e) => {
                     e.preventDefault()
                     e.stopPropagation()
@@ -1073,11 +1263,11 @@ const ImageToImagePage = () => {
                     }
                   }}
                 >
-                  <Plus className="h-4 w-4 mr-2" />
-                  Upload more photos
+                  <Plus className="h-4 w-4" />
+                  Upload more products
                 </Button>
-                <p className="text-xs text-[#3f3f46]">
-                  {4 - uploadedImages.length} more image{4 - uploadedImages.length !== 1 ? "s" : ""} allowed
+                <p className="text-xs text-[#71717a] text-center">
+                  {4 - uploadedImages.length} more product{4 - uploadedImages.length !== 1 ? "s" : ""} allowed
                 </p>
               </div>
             )}
