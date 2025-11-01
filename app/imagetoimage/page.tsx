@@ -750,14 +750,18 @@ const ImageToImagePage = () => {
 
   const handleAngleImageUpload = (mainImageIndex: number, angleType: string, file: File) => {
     if (file.type.startsWith("image/")) {
-      const imageUrl = URL.createObjectURL(file)
-      setAngleImages((prev) => ({
-        ...prev,
-        [mainImageIndex]: {
-          ...(prev[mainImageIndex] || {}),
-          [angleType]: imageUrl,
-        },
-      }))
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        const dataUrl = reader.result as string
+        setAngleImages((prev) => ({
+          ...prev,
+          [mainImageIndex]: {
+            ...(prev[mainImageIndex] || {}),
+            [angleType]: dataUrl,
+          },
+        }))
+      }
+      reader.readAsDataURL(file)
     }
   }
 
