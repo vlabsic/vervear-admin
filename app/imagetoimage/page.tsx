@@ -1219,16 +1219,22 @@ const ImageToImagePage = () => {
                       <X className="h-4 w-4 text-white" />
                     </button>
 
-                    <button
-                      onClick={() => toggleAngles(index)}
-                      className="absolute bottom-2 right-2 p-2 bg-black/50 hover:bg-black/70 rounded-full transition-colors z-10"
-                    >
-                      {expandedAngles.has(index) ? (
-                        <Minus className="h-4 w-4 text-white" />
-                      ) : (
+                    {!expandedAngles.has(index) ? (
+                      <button
+                        onClick={() => toggleAngles(index)}
+                        className="absolute bottom-2 right-2 px-3 py-1.5 bg-black/40 hover:bg-black/60 rounded-lg transition-colors z-10 flex items-center gap-1.5"
+                      >
                         <Plus className="h-4 w-4 text-white" />
-                      )}
-                    </button>
+                        <span className="text-white text-xs font-medium">Angles (Optional)</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => toggleAngles(index)}
+                        className="absolute bottom-2 right-2 p-2 bg-black/40 hover:bg-black/60 rounded-full transition-colors z-10"
+                      >
+                        <Minus className="h-4 w-4 text-white" />
+                      </button>
+                    )}
 
                     {expandedAngles.has(index) && (
                       <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-2 z-10">
