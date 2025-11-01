@@ -311,19 +311,30 @@ const ImageToImagePage = () => {
     try {
       console.log("[v0] Starting image generation with Gemini API")
 
-      const base64Images = await Promise.all(
-        uploadedImages.map(async (imageUrl) => {
-          const response = await fetch(imageUrl)
-          const blob = await response.blob()
-          return new Promise<string>((resolve) => {
-            const reader = new FileReader()
-            reader.onloadend = () => resolve(reader.result as string)
-            reader.readAsDataURL(blob)
-          })
-        }),
-      )
+      let base64Images: string[]
+      try {
+        base64Images = await Promise.all(
+          uploadedImages.map(async (imageUrl) => {
+            const response = await fetch(imageUrl)
+            if (!response.ok) {
+              throw new Error(`Failed to fetch image: ${response.statusText}`)
+            }
+            const blob = await response.blob()
+            return new Promise<string>((resolve, reject) => {
+              const reader = new FileReader()
+              reader.onloadend = () => resolve(reader.result as string)
+              reader.onerror = () => reject(new Error("Failed to read image file"))
+              reader.readAsDataURL(blob)
+            })
+          }),
+        )
+        console.log(`[v0] Successfully converted ${base64Images.length} images to base64`)
+      } catch (conversionError) {
+        console.error("[v0] Error converting images to base64:", conversionError)
+        throw new Error("Failed to process uploaded images. Please try again.")
+      }
 
-      console.log(`[v0] Converted ${base64Images.length} images to base64, calling API for multiple variations`)
+      console.log(`[v0] Calling API for ${imageCount} variations`)
 
       const generatedImagePromises = []
       for (let i = 0; i < imageCount; i++) {
@@ -332,13 +343,10 @@ const ImageToImagePage = () => {
         let finalPrompt = ""
 
         if (selectedStylePrompt && selectedFurnitureType !== "Select your background") {
-          // Replace placeholder with background type
           finalPrompt = selectedStylePrompt.replace(/{ENTER TYPE OF SPACE HERE}/g, selectedFurnitureType.toLowerCase())
         } else if (selectedStylePrompt) {
-          // Style selected but no background type - use "space" as default
           finalPrompt = selectedStylePrompt.replace(/{ENTER TYPE OF SPACE HERE}/g, "space")
         } else {
-          // No style selected - use user's description with background context
           const backgroundContext =
             selectedFurnitureType !== "Select your background"
               ? `in a ${selectedFurnitureType.toLowerCase()} setting`
@@ -346,7 +354,6 @@ const ImageToImagePage = () => {
           finalPrompt = `${backgroundDescription}${backgroundContext ? ` ${backgroundContext}` : ""}`
         }
 
-        // Add variation info
         const variationPrompt = `${finalPrompt}. This is variation ${i + 1} of ${imageCount}. ${
           furnitureCount > 1
             ? `There are ${furnitureCount} furniture pieces that should be staged together in the same scene.`
@@ -354,60 +361,81 @@ const ImageToImagePage = () => {
         } Create a unique and distinct background setting that differs from other variations in lighting, angle, time of day, or environmental details while maintaining the same overall theme.`
 
         generatedImagePromises.push(
-          fetch("/api/generate-background", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              images: base64Images,
-              prompt: variationPrompt,
-              imageCount: 1,
-              furnitureCount: uploadedImages.length,
-              backgroundType: selectedFurnitureType !== "Select your background" ? selectedFurnitureType : undefined,
-              selectedStyle: selectedStyle,
-              includePropFurniture: includePropFurniture,
-              angleImages: angleImages, // Pass angle images data to the API
-            }),
-          }).then(async (apiResponse) => {
-            if (!apiResponse.ok) {
-              let errorMessage = "Failed to generate image"
+          (async () => {
+            try {
+              console.log(`[v0] Generating variation ${i + 1}/${imageCount}`)
 
-              try {
-                const contentType = apiResponse.headers.get("content-type")
-                if (contentType && contentType.includes("application/json")) {
-                  const errorData = await apiResponse.json()
-                  errorMessage = errorData.error || errorMessage
-                  console.error("[v0] API error:", errorData)
-                } else {
-                  const errorText = await apiResponse.text()
-                  console.error("[v0] API error (non-JSON):", errorText)
-                  errorMessage = "Server returned an invalid response. Please try again."
+              const apiResponse = await fetch("/api/generate-background", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  images: base64Images,
+                  prompt: variationPrompt,
+                  imageCount: 1,
+                  furnitureCount: uploadedImages.length,
+                  backgroundType:
+                    selectedFurnitureType !== "Select your background" ? selectedFurnitureType : undefined,
+                  selectedStyle: selectedStyle,
+                  includePropFurniture: includePropFurniture,
+                  angleImages: angleImages,
+                }),
+              })
+
+              console.log(`[v0] API response status for variation ${i + 1}:`, apiResponse.status)
+
+              if (!apiResponse.ok) {
+                let errorMessage = "Failed to generate image"
+
+                try {
+                  const contentType = apiResponse.headers.get("content-type")
+                  console.log(`[v0] Error response content-type:`, contentType)
+
+                  if (contentType && contentType.includes("application/json")) {
+                    const errorData = await apiResponse.json()
+                    errorMessage = errorData.error || errorMessage
+                    console.error("[v0] API error (JSON):", errorData)
+                  } else {
+                    const errorText = await apiResponse.text()
+                    console.error("[v0] API error (non-JSON):", errorText.substring(0, 200))
+                    errorMessage = "Server returned an invalid response. Please try again."
+                  }
+                } catch (parseError) {
+                  console.error("[v0] Failed to parse error response:", parseError)
+                  errorMessage = "Unable to process server response. Please try again."
                 }
-              } catch (parseError) {
-                console.error("[v0] Failed to parse error response:", parseError)
-                errorMessage = "Unable to process server response. Please try again."
+
+                throw new Error(errorMessage)
               }
 
-              throw new Error(errorMessage)
-            }
+              try {
+                const data = await apiResponse.json()
+                console.log(`[v0] Successfully parsed response for variation ${i + 1}`)
 
-            try {
-              const data = await apiResponse.json()
-              return data.images?.[0] || null
-            } catch (parseError) {
-              console.error("[v0] Failed to parse success response:", parseError)
-              throw new Error("Invalid response format from server. Please try again.")
+                if (!data.images || !Array.isArray(data.images) || data.images.length === 0) {
+                  console.error("[v0] Invalid response structure:", data)
+                  throw new Error("Server returned invalid image data")
+                }
+
+                return data.images[0]
+              } catch (parseError) {
+                console.error("[v0] Failed to parse success response:", parseError)
+                throw new Error("Invalid response format from server. Please try again.")
+              }
+            } catch (error) {
+              console.error(`[v0] Error generating variation ${i + 1}:`, error)
+              throw error
             }
-          }),
+          })(),
         )
       }
 
-      // Wait for all images to be generated
+      console.log("[v0] Waiting for all variations to complete...")
       const images = await Promise.all(generatedImagePromises)
-      const validImages = images.filter((img) => img !== null)
+      const validImages = images.filter((img) => img !== null && img !== undefined)
 
-      console.log("[v0] Generated images received:", validImages.length)
+      console.log("[v0] Generated images received:", validImages.length, "out of", imageCount, "requested")
 
       if (validImages.length > 0) {
         const newImagesLeft = Math.max(0, imagesLeft - validImages.length)
@@ -418,13 +446,19 @@ const ImageToImagePage = () => {
         setGeneratedImages(validImages)
         setShowGeneratedImages(true)
         setShowGeneratingModal(false)
+
+        console.log("[v0] Image generation completed successfully")
       } else {
-        throw new Error("No images generated")
+        throw new Error("No valid images were generated")
       }
     } catch (error) {
-      console.error("[v0] Error generating background:", error)
-      alert(`Failed to generate images: ${error instanceof Error ? error.message : "Unknown error"}`)
+      console.error("[v0] Error in handleGenerateBackground:", error)
+      console.error("[v0] Error stack:", error instanceof Error ? error.stack : "No stack trace")
+
+      const errorMessage = error instanceof Error ? error.message : "Unknown error occurred"
+      alert(`Failed to generate images: ${errorMessage}`)
       setShowGeneratingModal(false)
+      setApiCompleted(false)
     }
   }
 
