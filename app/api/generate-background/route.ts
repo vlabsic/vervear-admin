@@ -64,7 +64,19 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const imageDataArray = furnitureImages.map((img: string) => img.split(",")[1])
+    const imageDataArray = furnitureImages.map((img: string) => {
+      // Extract MIME type from data URL (e.g., "data:image/png;base64,...")
+      const mimeTypeMatch = img.match(/^data:([^;]+);base64,/)
+      const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : "image/jpeg"
+      const base64Data = img.split(",")[1]
+
+      console.log("[v0] Processing image with MIME type:", mimeType)
+
+      return {
+        mimeType,
+        data: base64Data,
+      }
+    })
 
     const backgroundContext = backgroundType ? `in a ${backgroundType.toLowerCase()} setting` : ""
     const environmentDescription = backgroundContext ? `${prompt} ${backgroundContext}` : prompt
@@ -188,12 +200,11 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
 
     const parts: any[] = [{ text: fullPrompt }]
 
-    // Add all furniture images to the request
-    imageDataArray.forEach((imageData: string) => {
+    imageDataArray.forEach((imageData: { mimeType: string; data: string }) => {
       parts.push({
         inline_data: {
-          mime_type: "image/jpeg",
-          data: imageData,
+          mime_type: imageData.mimeType,
+          data: imageData.data,
         },
       })
     })
