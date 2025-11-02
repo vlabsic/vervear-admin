@@ -8,7 +8,6 @@ export const metadata: Metadata = {
   description: "Create stunning product backgrounds and 3D experiences with our powerful AI tools.",
   icons: {
     icon: "/favicon.png",
-    apple: "/favicon.png",
   },
     generator: 'v0.app'
 }

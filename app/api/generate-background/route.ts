@@ -1,42 +1,9 @@
 import { type NextRequest, NextResponse } from "next/server"
 
-function getImagesLeftFromCookie(request: NextRequest): number {
-  const cookieValue = request.cookies.get("imagesLeft")?.value
-  return cookieValue ? Number.parseInt(cookieValue, 10) : 10
-}
-
-function setImagesLeftCookie(response: NextResponse, imagesLeft: number): void {
-  response.cookies.set("imagesLeft", imagesLeft.toString(), {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 60 * 60 * 24 * 365, // 1 year
-  })
-}
-
 export async function POST(request: NextRequest) {
   try {
     const { images, image, prompt, imageCount, furnitureCount, backgroundType, includePropFurniture } =
       await request.json()
-
-    const currentImagesLeft = getImagesLeftFromCookie(request)
-    console.log("[v0] Server-side check - Images left:", currentImagesLeft, "Requested:", imageCount)
-
-    if (currentImagesLeft < imageCount) {
-      console.log("[v0] Server rejected: Not enough images left")
-      return NextResponse.json(
-        { error: "Image limit exceeded. Please subscribe or purchase more images." },
-        { status: 403 },
-      )
-    }
-
-    if (currentImagesLeft <= 0) {
-      console.log("[v0] Server rejected: Image limit reached (0 images)")
-      return NextResponse.json(
-        { error: "Image limit reached. Please subscribe or purchase more images." },
-        { status: 403 },
-      )
-    }
 
     const furnitureImages = images || (image ? [image] : [])
     const numFurniture = furnitureCount || furnitureImages.length
@@ -47,7 +14,7 @@ export async function POST(request: NextRequest) {
       imageCount,
       furnitureCount: numFurniture,
       backgroundType,
-      includePropFurniture,
+      includePropFurniture, // Log prop furniture setting
     })
 
     if (furnitureImages.length === 0 || !prompt) {
@@ -64,19 +31,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const imageDataArray = furnitureImages.map((img: string) => {
-      // Extract MIME type from data URL (e.g., "data:image/png;base64,...")
-      const mimeTypeMatch = img.match(/^data:([^;]+);base64,/)
-      const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : "image/jpeg"
-      const base64Data = img.split(",")[1]
-
-      console.log("[v0] Processing image with MIME type:", mimeType)
-
-      return {
-        mimeType,
-        data: base64Data,
-      }
-    })
+    const imageDataArray = furnitureImages.map((img: string) => img.split(",")[1])
 
     const backgroundContext = backgroundType ? `in a ${backgroundType.toLowerCase()} setting` : ""
     const environmentDescription = backgroundContext ? `${prompt} ${backgroundContext}` : prompt
@@ -200,92 +155,46 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
 
     const parts: any[] = [{ text: fullPrompt }]
 
-    imageDataArray.forEach((imageData: { mimeType: string; data: string }) => {
+    // Add all furniture images to the request
+    imageDataArray.forEach((imageData: string) => {
       parts.push({
         inline_data: {
-          mime_type: imageData.mimeType,
-          data: imageData.data,
+          mime_type: "image/jpeg",
+          data: imageData,
         },
       })
     })
 
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout
-
-    let response
-    try {
-      response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: parts,
-              },
-            ],
-            generationConfig: {
-              temperature: 0.4,
-              topK: 32,
-              topP: 1,
-              maxOutputTokens: 4096,
-            },
-          }),
-          signal: controller.signal,
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-      )
-    } catch (fetchError: any) {
-      clearTimeout(timeoutId)
-      console.error("[v0] Fetch error:", fetchError)
-
-      if (fetchError.name === "AbortError") {
-        return NextResponse.json(
-          { error: "Request timeout. Please try again with fewer images or a simpler prompt." },
-          { status: 504 },
-        )
-      }
-
-      return NextResponse.json({ error: "Network error. Please check your connection and try again." }, { status: 500 })
-    }
-
-    clearTimeout(timeoutId)
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: parts,
+            },
+          ],
+          generationConfig: {
+            temperature: 0.4,
+            topK: 32,
+            topP: 1,
+            maxOutputTokens: 4096,
+          },
+        }),
+      },
+    )
 
     if (!response.ok) {
-      let errorData
-      const contentType = response.headers.get("content-type")
-
-      try {
-        if (contentType && contentType.includes("application/json")) {
-          errorData = await response.json()
-        } else {
-          const errorText = await response.text()
-          errorData = { message: errorText }
-        }
-      } catch (parseError) {
-        errorData = { message: "Failed to parse error response from Gemini API" }
-      }
-
+      const errorData = await response.json()
       console.error("[v0] Gemini API error:", JSON.stringify(errorData, null, 2))
-      return NextResponse.json(
-        { error: "Failed to generate image. Please try again.", details: errorData },
-        { status: response.status },
-      )
+      return NextResponse.json({ error: "Failed to generate image", details: errorData }, { status: response.status })
     }
 
-    let data
-    try {
-      data = await response.json()
-    } catch (parseError) {
-      console.error("[v0] Failed to parse Gemini API response:", parseError)
-      return NextResponse.json(
-        { error: "Invalid response from image generation service. Please try again." },
-        { status: 500 },
-      )
-    }
-
+    const data = await response.json()
     console.log("[v0] Gemini API response:", JSON.stringify(data, null, 2))
 
     // Extract the generated image from the response
@@ -306,13 +215,7 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
           images.push(generatedImages[0])
         }
 
-        const newImagesLeft = Math.max(0, currentImagesLeft - imageCount)
-        console.log("[v0] Server updating images left from", currentImagesLeft, "to", newImagesLeft)
-
-        const jsonResponse = NextResponse.json({ images })
-        setImagesLeftCookie(jsonResponse, newImagesLeft)
-
-        return jsonResponse
+        return NextResponse.json({ images })
       }
     }
 
@@ -321,12 +224,6 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
     return NextResponse.json({ error: "No image generated", details: data }, { status: 500 })
   } catch (error) {
     console.error("[v0] Error in generate-background API:", error)
-    return NextResponse.json(
-      {
-        error: "Internal server error. Please try again.",
-        details: error instanceof Error ? error.message : String(error),
-      },
-      { status: 500 },
-    )
+    return NextResponse.json({ error: "Internal server error", details: String(error) }, { status: 500 })
   }
 }

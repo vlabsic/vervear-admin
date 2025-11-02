@@ -163,25 +163,12 @@ const ImageToImagePage = () => {
   const [countdown, setCountdown] = useState(55)
   const [apiCompleted, setApiCompleted] = useState(false)
 
-  const [imagesLeft, setImagesLeft] = useState(() => {
-    if (typeof window !== "undefined") {
-      const stored = localStorage.getItem("imagesLeft")
-      return stored !== null ? Number.parseInt(stored, 10) : 10
-    }
-    return 10
-  })
+  const [imagesLeft, setImagesLeft] = useState(10)
   const [showLimitModal, setShowLimitModal] = useState(false)
 
   const creditsByCount: Record<number, number> = { 1: 10, 2: 25, 3: 40, 4: 50 }
   const credits = creditsByCount[imageCount] ?? 10
   const generateLabel = `Generate`
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("imagesLeft", imagesLeft.toString())
-      console.log("[v0] Images left updated in localStorage:", imagesLeft)
-    }
-  }, [imagesLeft])
 
   // Custom image sources
   const IMAGE_SOURCES = {
@@ -283,17 +270,7 @@ const ImageToImagePage = () => {
       return
     }
 
-    const requiredImages = imageCount
-    console.log("[v0] Checking image limit. Required:", requiredImages, "Available:", imagesLeft)
-
-    if (imagesLeft < requiredImages) {
-      console.log("[v0] Not enough images left. Showing limit modal.")
-      setShowLimitModal(true)
-      return
-    }
-
     if (imagesLeft <= 0) {
-      console.log("[v0] Image limit reached (0 images left). Showing limit modal.")
       setShowLimitModal(true)
       return
     }
@@ -360,39 +337,17 @@ const ImageToImagePage = () => {
               imageCount: 1,
               furnitureCount: uploadedImages.length,
               backgroundType: selectedFurnitureType !== "Select your background" ? selectedFurnitureType : undefined,
-              selectedStyle: selectedStyle,
-              includePropFurniture: includePropFurniture,
+              selectedStyle: selectedStyle, // Pass selected style to API
+              includePropFurniture: includePropFurniture, // Pass prop furniture toggle state to API
             }),
           }).then(async (apiResponse) => {
             if (!apiResponse.ok) {
-              let errorMessage = "Failed to generate image"
-
-              try {
-                const contentType = apiResponse.headers.get("content-type")
-                if (contentType && contentType.includes("application/json")) {
-                  const errorData = await apiResponse.json()
-                  errorMessage = errorData.error || errorMessage
-                  console.error("[v0] API error:", errorData)
-                } else {
-                  const errorText = await apiResponse.text()
-                  console.error("[v0] API error (non-JSON):", errorText)
-                  errorMessage = "Server returned an invalid response. Please try again."
-                }
-              } catch (parseError) {
-                console.error("[v0] Failed to parse error response:", parseError)
-                errorMessage = "Unable to process server response. Please try again."
-              }
-
-              throw new Error(errorMessage)
+              const errorData = await apiResponse.json()
+              console.error("[v0] API error:", errorData)
+              throw new Error(errorData.error || "Failed to generate image")
             }
-
-            try {
-              const data = await apiResponse.json()
-              return data.images?.[0] || null
-            } catch (parseError) {
-              console.error("[v0] Failed to parse success response:", parseError)
-              throw new Error("Invalid response format from server. Please try again.")
-            }
+            const data = await apiResponse.json()
+            return data.images?.[0] || null
           }),
         )
       }
@@ -404,9 +359,7 @@ const ImageToImagePage = () => {
       console.log("[v0] Generated images received:", validImages.length)
 
       if (validImages.length > 0) {
-        const newImagesLeft = Math.max(0, imagesLeft - validImages.length)
-        console.log("[v0] Deducting images. Before:", imagesLeft, "After:", newImagesLeft)
-        setImagesLeft(newImagesLeft)
+        setImagesLeft((prev) => Math.max(0, prev - validImages.length))
 
         setApiCompleted(true)
         setGeneratedImages(validImages)
@@ -1083,10 +1036,10 @@ const ImageToImagePage = () => {
 
             {/* Upload More Photos Button - Fixed Position - Only show when no generated images */}
             {!showGeneratedImages && uploadedImages.length > 0 && uploadedImages.length < 4 && (
-              <div className="absolute bottom-4 right-4 flex flex-col items-center gap-2">
+              <div className="absolute bottom-4 right-4 flex flex-col items-end gap-2">
                 <Button
                   variant="secondary"
-                  className="bg-[#18181b] text-[#ffffff] hover:bg-[#3f3f46] gap-1"
+                  className="bg-[#18181b] text-[#ffffff] hover:bg-[#3f3f46]"
                   onClick={(e) => {
                     e.preventDefault()
                     e.stopPropagation()
@@ -1095,11 +1048,11 @@ const ImageToImagePage = () => {
                     }
                   }}
                 >
-                  <Plus className="h-4 w-4" />
-                  Upload more products
+                  <Plus className="h-4 w-4 mr-2" />
+                  Upload more photos
                 </Button>
-                <p className="text-xs text-[#71717a] text-center">
-                  {4 - uploadedImages.length} more product{4 - uploadedImages.length !== 1 ? "s" : ""} allowed
+                <p className="text-xs text-[#3f3f46]">
+                  {4 - uploadedImages.length} more image{4 - uploadedImages.length !== 1 ? "s" : ""} allowed
                 </p>
               </div>
             )}
