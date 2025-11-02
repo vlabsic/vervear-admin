@@ -16,7 +16,7 @@ function setImagesLeftCookie(response: NextResponse, imagesLeft: number): void {
 
 export async function POST(request: NextRequest) {
   try {
-    const { images, image, prompt, imageCount, furnitureCount, backgroundType, includePropFurniture, angleImages } =
+    const { images, image, prompt, imageCount, furnitureCount, backgroundType, includePropFurniture } =
       await request.json()
 
     const currentImagesLeft = getImagesLeftFromCookie(request)
@@ -66,42 +66,8 @@ export async function POST(request: NextRequest) {
 
     const imageDataArray = furnitureImages.map((img: string) => img.split(",")[1])
 
-    const angleImageDataMap: Record<number, Record<string, { data: string; mimeType: string }>> = {}
-    if (angleImages) {
-      for (const [mainImageIndex, angles] of Object.entries(angleImages)) {
-        angleImageDataMap[Number.parseInt(mainImageIndex)] = {}
-        for (const [angleType, angleImageUrl] of Object.entries(angles as Record<string, string>)) {
-          if (angleImageUrl) {
-            const mimeTypeMatch = angleImageUrl.match(/^data:([^;]+);base64,/)
-            const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : "image/jpeg"
-            const base64Data = angleImageUrl.split(",")[1]
-
-            angleImageDataMap[Number.parseInt(mainImageIndex)][angleType] = {
-              data: base64Data,
-              mimeType: mimeType,
-            }
-          }
-        }
-      }
-    }
-
     const backgroundContext = backgroundType ? `in a ${backgroundType.toLowerCase()} setting` : ""
     const environmentDescription = backgroundContext ? `${prompt} ${backgroundContext}` : prompt
-
-    const angleImagesContext =
-      Object.keys(angleImageDataMap).length > 0
-        ? `\n\nADDITIONAL REFERENCE IMAGES PROVIDED:
-- You have been provided with additional angle views (Front, Back, Left, Right) of the furniture
-- Use these angle images as CRITICAL REFERENCE to understand:
-  * The exact material composition and texture of the furniture
-  * Surface finishes, grain patterns, and material properties
-  * Color accuracy and tonal variations across different angles
-  * Construction details and joinery
-  * Dimensional accuracy and proportions from multiple perspectives
-- These angle views are ESSENTIAL for maintaining material and texture fidelity
-- Ensure the staged furniture matches the materials shown in ALL reference angles
-- Pay special attention to how light interacts with the materials shown in the angle views`
-        : ""
 
     const backgroundEmphasis = backgroundType
       ? `\n\nCRITICAL BACKGROUND REQUIREMENT:\n- The furniture MUST be staged in a ${backgroundType.toUpperCase()} environment\n- The setting should clearly represent a ${backgroundType.toLowerCase()} space\n- All background elements must be appropriate for a ${backgroundType.toLowerCase()}\n- The ${backgroundType.toLowerCase()} setting is NON-NEGOTIABLE and must be clearly visible`
@@ -126,7 +92,7 @@ export async function POST(request: NextRequest) {
 
     const fullPrompt =
       numFurniture === 1
-        ? `You are a professional furniture staging AI. Your task is to place the furniture shown in the reference image into the following environment: ${environmentDescription}${backgroundEmphasis}${angleImagesContext}
+        ? `You are a professional furniture staging AI. Your task is to place the furniture shown in the reference image into the following environment: ${environmentDescription}${backgroundEmphasis}
 
 CRITICAL REQUIREMENTS:
 - Keep the furniture EXACTLY as it appears in the reference image
@@ -168,7 +134,7 @@ IMAGE FORMAT REQUIREMENTS:
 Stage the furniture professionally in the described environment with perfect composition balance.
 
 Generate a photorealistic 1024x1024 pixel image with the furniture staged in: ${environmentDescription}`
-        : `You are a professional furniture staging AI. Your task is to analyze ${numFurniture} furniture pieces shown in the reference images and stage them together in the following environment: ${environmentDescription}${backgroundEmphasis}${angleImagesContext}
+        : `You are a professional furniture staging AI. Your task is to analyze ${numFurniture} furniture pieces shown in the reference images and stage them together in the following environment: ${environmentDescription}${backgroundEmphasis}
 
 CRITICAL REQUIREMENTS FOR EACH FURNITURE PIECE:
 - First, carefully analyze each furniture piece to understand what it is (chair, sofa, table, etc.)
@@ -222,6 +188,7 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
 
     const parts: any[] = [{ text: fullPrompt }]
 
+    // Add all furniture images to the request
     imageDataArray.forEach((imageData: string) => {
       parts.push({
         inline_data: {
@@ -230,21 +197,6 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
         },
       })
     })
-
-    if (Object.keys(angleImageDataMap).length > 0) {
-      console.log("[v0] Adding angle images to Gemini API request for enhanced material understanding")
-      for (const [mainImageIndex, angles] of Object.entries(angleImageDataMap)) {
-        for (const [angleType, angleImageInfo] of Object.entries(angles)) {
-          console.log(`[v0] Adding ${angleType} angle for furniture ${mainImageIndex}`)
-          parts.push({
-            inline_data: {
-              mime_type: angleImageInfo.mimeType,
-              data: angleImageInfo.data,
-            },
-          })
-        }
-      }
-    }
 
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout
@@ -325,6 +277,7 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
 
     console.log("[v0] Gemini API response:", JSON.stringify(data, null, 2))
 
+    // Extract the generated image from the response
     if (data.candidates && data.candidates[0]?.content?.parts) {
       const imageParts = data.candidates[0].content.parts.filter((part: any) => part.inlineData)
 
@@ -352,6 +305,7 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
       }
     }
 
+    // If no image data found, return error
     console.error("[v0] No image data in response")
     return NextResponse.json({ error: "No image generated", details: data }, { status: 500 })
   } catch (error) {

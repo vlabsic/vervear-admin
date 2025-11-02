@@ -17,7 +17,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Shuffle,
-  Minus,
 } from "lucide-react"
 import confetti from "canvas-confetti"
 import Link from "next/link"
@@ -173,10 +172,6 @@ const ImageToImagePage = () => {
   })
   const [showLimitModal, setShowLimitModal] = useState(false)
 
-  const [expandedAngles, setExpandedAngles] = useState<Set<number>>(new Set())
-  const [angleImages, setAngleImages] = useState<Record<number, Record<string, string>>>({})
-  const angleFileInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
-
   const creditsByCount: Record<number, number> = { 1: 10, 2: 25, 3: 40, 4: 50 }
   const credits = creditsByCount[imageCount] ?? 10
   const generateLabel = `Generate`
@@ -281,6 +276,7 @@ const ImageToImagePage = () => {
     }
   }, [showGeneratingModal, apiCompleted])
 
+  // Add handler functions
   const handleGenerateBackground = async () => {
     if (!uploadedImages.length || !backgroundDescription.trim()) {
       alert("Please upload at least one image and provide a background description")
@@ -310,45 +306,19 @@ const ImageToImagePage = () => {
     try {
       console.log("[v0] Starting image generation with Gemini API")
 
-      let base64Images: string[]
-      try {
-        base64Images = await Promise.all(
-          uploadedImages.map(async (imageUrl, index) => {
-            try {
-              console.log(`[v0] Converting image ${index + 1}/${uploadedImages.length} to base64`)
-              const response = await fetch(imageUrl)
-              if (!response.ok) {
-                throw new Error(`Failed to fetch image ${index + 1}: ${response.statusText}`)
-              }
-              const blob = await response.blob()
-              return new Promise<string>((resolve, reject) => {
-                const reader = new FileReader()
-                reader.onloadend = () => {
-                  const result = reader.result as string
-                  if (!result || !result.startsWith("data:image/")) {
-                    reject(new Error(`Invalid image data for image ${index + 1}`))
-                  } else {
-                    resolve(result)
-                  }
-                }
-                reader.onerror = () => reject(new Error(`Failed to read image ${index + 1}`))
-                reader.readAsDataURL(blob)
-              })
-            } catch (imageError) {
-              console.error(`[v0] Error processing image ${index + 1}:`, imageError)
-              throw imageError
-            }
-          }),
-        )
-        console.log(`[v0] Successfully converted ${base64Images.length} images to base64`)
-      } catch (conversionError) {
-        console.error("[v0] Error converting images to base64:", conversionError)
-        throw new Error(
-          `Failed to process uploaded images: ${conversionError instanceof Error ? conversionError.message : "Unknown error"}`,
-        )
-      }
+      const base64Images = await Promise.all(
+        uploadedImages.map(async (imageUrl) => {
+          const response = await fetch(imageUrl)
+          const blob = await response.blob()
+          return new Promise<string>((resolve) => {
+            const reader = new FileReader()
+            reader.onloadend = () => resolve(reader.result as string)
+            reader.readAsDataURL(blob)
+          })
+        }),
+      )
 
-      console.log(`[v0] Calling API for ${imageCount} variations`)
+      console.log(`[v0] Converted ${base64Images.length} images to base64, calling API for multiple variations`)
 
       const generatedImagePromises = []
       for (let i = 0; i < imageCount; i++) {
@@ -357,10 +327,13 @@ const ImageToImagePage = () => {
         let finalPrompt = ""
 
         if (selectedStylePrompt && selectedFurnitureType !== "Select your background") {
+          // Replace placeholder with background type
           finalPrompt = selectedStylePrompt.replace(/{ENTER TYPE OF SPACE HERE}/g, selectedFurnitureType.toLowerCase())
         } else if (selectedStylePrompt) {
+          // Style selected but no background type - use "space" as default
           finalPrompt = selectedStylePrompt.replace(/{ENTER TYPE OF SPACE HERE}/g, "space")
         } else {
+          // No style selected - use user's description with background context
           const backgroundContext =
             selectedFurnitureType !== "Select your background"
               ? `in a ${selectedFurnitureType.toLowerCase()} setting`
@@ -368,6 +341,7 @@ const ImageToImagePage = () => {
           finalPrompt = `${backgroundDescription}${backgroundContext ? ` ${backgroundContext}` : ""}`
         }
 
+        // Add variation info
         const variationPrompt = `${finalPrompt}. This is variation ${i + 1} of ${imageCount}. ${
           furnitureCount > 1
             ? `There are ${furnitureCount} furniture pieces that should be staged together in the same scene.`
@@ -375,195 +349,76 @@ const ImageToImagePage = () => {
         } Create a unique and distinct background setting that differs from other variations in lighting, angle, time of day, or environmental details while maintaining the same overall theme.`
 
         generatedImagePromises.push(
-          (async () => {
-            try {
-              console.log(`[v0] Generating variation ${i + 1}/${imageCount}`)
+          fetch("/api/generate-background", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              images: base64Images,
+              prompt: variationPrompt,
+              imageCount: 1,
+              furnitureCount: uploadedImages.length,
+              backgroundType: selectedFurnitureType !== "Select your background" ? selectedFurnitureType : undefined,
+              selectedStyle: selectedStyle,
+              includePropFurniture: includePropFurniture,
+            }),
+          }).then(async (apiResponse) => {
+            if (!apiResponse.ok) {
+              let errorMessage = "Failed to generate image"
 
-              const controller = new AbortController()
-              const timeoutId = setTimeout(() => {
-                controller.abort()
-                console.error(`[v0] Request timeout for variation ${i + 1}`)
-              }, 90000) // 90 second timeout
-
-              let apiResponse
               try {
-                apiResponse = await fetch("/api/generate-background", {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/json",
-                  },
-                  body: JSON.stringify({
-                    images: base64Images,
-                    prompt: variationPrompt,
-                    imageCount: 1,
-                    furnitureCount: uploadedImages.length,
-                    backgroundType:
-                      selectedFurnitureType !== "Select your background" ? selectedFurnitureType : undefined,
-                    selectedStyle: selectedStyle,
-                    includePropFurniture: includePropFurniture,
-                    angleImages: angleImages,
-                  }),
-                  signal: controller.signal,
-                })
-                clearTimeout(timeoutId)
-              } catch (fetchError: any) {
-                clearTimeout(timeoutId)
-                console.error(`[v0] Network error for variation ${i + 1}:`, fetchError)
-
-                if (fetchError.name === "AbortError") {
-                  throw new Error("Request timed out. The server took too long to respond. Please try again.")
+                const contentType = apiResponse.headers.get("content-type")
+                if (contentType && contentType.includes("application/json")) {
+                  const errorData = await apiResponse.json()
+                  errorMessage = errorData.error || errorMessage
+                  console.error("[v0] API error:", errorData)
+                } else {
+                  const errorText = await apiResponse.text()
+                  console.error("[v0] API error (non-JSON):", errorText)
+                  errorMessage = "Server returned an invalid response. Please try again."
                 }
-
-                throw new Error(
-                  `Network error: ${fetchError.message || "Unable to connect to server. Please check your internet connection."}`,
-                )
-              }
-
-              console.log(`[v0] API response status for variation ${i + 1}:`, apiResponse.status)
-              console.log(
-                `[v0] API response content-type for variation ${i + 1}:`,
-                apiResponse.headers.get("content-type"),
-              )
-
-              if (!apiResponse.ok) {
-                let errorMessage = "Failed to generate image"
-
-                try {
-                  const contentType = apiResponse.headers.get("content-type")
-
-                  if (contentType && contentType.includes("application/json")) {
-                    const errorData = await apiResponse.json()
-                    errorMessage = errorData.error || errorMessage
-                    console.error(`[v0] API error (JSON) for variation ${i + 1}:`, errorData)
-
-                    // Provide more specific error messages based on status code
-                    if (apiResponse.status === 403) {
-                      errorMessage = "Image limit exceeded. Please subscribe or purchase more images."
-                    } else if (apiResponse.status === 400) {
-                      errorMessage = errorData.error || "Invalid request. Please check your inputs and try again."
-                    } else if (apiResponse.status === 500) {
-                      errorMessage = errorData.error || "Server error occurred. Please try again in a few moments."
-                    } else if (apiResponse.status === 504) {
-                      errorMessage = "Request timeout. Please try again with fewer images or a simpler prompt."
-                    }
-                  } else {
-                    const errorText = await apiResponse.text()
-                    console.error(`[v0] API error (non-JSON) for variation ${i + 1}:`, errorText.substring(0, 500))
-                    console.error(`[v0] Full response headers:`, Object.fromEntries(apiResponse.headers.entries()))
-
-                    // More specific error message for non-JSON responses
-                    if (apiResponse.status === 502 || apiResponse.status === 503) {
-                      errorMessage = "Service temporarily unavailable. Please try again in a few moments."
-                    } else if (apiResponse.status === 504) {
-                      errorMessage = "Request timeout. Please try again."
-                    } else {
-                      errorMessage = `Server error (${apiResponse.status}). Please try again.`
-                    }
-                  }
-                } catch (parseError) {
-                  console.error(`[v0] Failed to parse error response for variation ${i + 1}:`, parseError)
-                  errorMessage = `Unable to process server response (status ${apiResponse.status}). Please try again.`
-                }
-
-                throw new Error(errorMessage)
-              }
-
-              let data
-              try {
-                const responseText = await apiResponse.text()
-                console.log(
-                  `[v0] Raw response for variation ${i + 1} (first 200 chars):`,
-                  responseText.substring(0, 200),
-                )
-
-                data = JSON.parse(responseText)
-                console.log(`[v0] Successfully parsed response for variation ${i + 1}`)
               } catch (parseError) {
-                console.error(`[v0] Failed to parse success response for variation ${i + 1}:`, parseError)
-                throw new Error("Invalid response format from server. Please try again.")
+                console.error("[v0] Failed to parse error response:", parseError)
+                errorMessage = "Unable to process server response. Please try again."
               }
 
-              if (!data) {
-                console.error(`[v0] Empty response data for variation ${i + 1}`)
-                throw new Error("Server returned empty response. Please try again.")
-              }
-
-              if (!data.images) {
-                console.error(`[v0] Missing images array in response for variation ${i + 1}:`, data)
-                throw new Error("Server response missing image data. Please try again.")
-              }
-
-              if (!Array.isArray(data.images)) {
-                console.error(`[v0] Images is not an array for variation ${i + 1}:`, typeof data.images)
-                throw new Error("Invalid image data format from server. Please try again.")
-              }
-
-              if (data.images.length === 0) {
-                console.error(`[v0] Empty images array for variation ${i + 1}`)
-                throw new Error("Server returned no images. Please try again.")
-              }
-
-              const imageData = data.images[0]
-              if (!imageData || typeof imageData !== "string") {
-                console.error(`[v0] Invalid image data type for variation ${i + 1}:`, typeof imageData)
-                throw new Error("Invalid image data received from server. Please try again.")
-              }
-
-              if (!imageData.startsWith("data:image/")) {
-                console.error(`[v0] Image data doesn't start with data:image/ for variation ${i + 1}`)
-                throw new Error("Invalid image format received from server. Please try again.")
-              }
-
-              console.log(`[v0] Successfully validated image data for variation ${i + 1}`)
-              return imageData
-            } catch (error) {
-              console.error(`[v0] Error generating variation ${i + 1}:`, error)
-              console.error(`[v0] Error type:`, error instanceof Error ? error.constructor.name : typeof error)
-              console.error(`[v0] Error message:`, error instanceof Error ? error.message : String(error))
-              throw error
+              throw new Error(errorMessage)
             }
-          })(),
+
+            try {
+              const data = await apiResponse.json()
+              return data.images?.[0] || null
+            } catch (parseError) {
+              console.error("[v0] Failed to parse success response:", parseError)
+              throw new Error("Invalid response format from server. Please try again.")
+            }
+          }),
         )
       }
 
-      console.log("[v0] Waiting for all variations to complete...")
+      // Wait for all images to be generated
       const images = await Promise.all(generatedImagePromises)
-      const validImages = images.filter((img) => img !== null && img !== undefined && typeof img === "string")
+      const validImages = images.filter((img) => img !== null)
 
-      console.log("[v0] Generated images received:", validImages.length, "out of", imageCount, "requested")
+      console.log("[v0] Generated images received:", validImages.length)
 
-      if (validImages.length === 0) {
-        throw new Error("No valid images were generated. Please try again.")
+      if (validImages.length > 0) {
+        const newImagesLeft = Math.max(0, imagesLeft - validImages.length)
+        console.log("[v0] Deducting images. Before:", imagesLeft, "After:", newImagesLeft)
+        setImagesLeft(newImagesLeft)
+
+        setApiCompleted(true)
+        setGeneratedImages(validImages)
+        setShowGeneratedImages(true)
+        setShowGeneratingModal(false)
+      } else {
+        throw new Error("No images generated")
       }
-
-      if (validImages.length < imageCount) {
-        console.warn(`[v0] Only ${validImages.length} out of ${imageCount} images were generated successfully`)
-      }
-
-      const newImagesLeft = Math.max(0, imagesLeft - validImages.length)
-      console.log("[v0] Deducting images. Before:", imagesLeft, "After:", newImagesLeft)
-      setImagesLeft(newImagesLeft)
-
-      setApiCompleted(true)
-      setGeneratedImages(validImages)
-      setShowGeneratedImages(true)
-      setShowGeneratingModal(false)
-
-      console.log("[v0] Image generation completed successfully")
     } catch (error) {
-      console.error("[v0] Error in handleGenerateBackground:", error)
-      console.error("[v0] Error type:", error instanceof Error ? error.constructor.name : typeof error)
-      console.error("[v0] Error message:", error instanceof Error ? error.message : String(error))
-      console.error("[v0] Error stack:", error instanceof Error ? error.stack : "No stack trace")
-
-      const errorMessage = error instanceof Error ? error.message : "Unknown error occurred"
-
-      alert(
-        `Failed to generate images: ${errorMessage}\n\nPlease try again. If the problem persists, try:\n- Using fewer images\n- Simplifying your prompt\n- Checking your internet connection`,
-      )
-
+      console.error("[v0] Error generating background:", error)
+      alert(`Failed to generate images: ${error instanceof Error ? error.message : "Unknown error"}`)
       setShowGeneratingModal(false)
-      setApiCompleted(false)
     }
   }
 
@@ -841,113 +696,6 @@ const ImageToImagePage = () => {
   // Ref for background description textarea
   const backgroundDescriptionRef = useRef<HTMLTextAreaElement>(null)
 
-  const toggleAngles = (imageIndex: number) => {
-    setExpandedAngles((prev) => {
-      const newSet = new Set(prev)
-      if (newSet.has(imageIndex)) {
-        newSet.delete(imageIndex)
-      } else {
-        newSet.add(imageIndex)
-      }
-      return newSet
-    })
-  }
-
-  const handleAngleImageUpload = (mainImageIndex: number, angleType: string, file: File) => {
-    if (file.type.startsWith("image/")) {
-      const reader = new FileReader()
-      reader.onloadend = () => {
-        const dataUrl = reader.result as string
-        setAngleImages((prev) => ({
-          ...prev,
-          [mainImageIndex]: {
-            ...(prev[mainImageIndex] || {}),
-            [angleType]: dataUrl,
-          },
-        }))
-      }
-      reader.readAsDataURL(file)
-    }
-  }
-
-  const removeAngleImage = (mainImageIndex: number, angleType: string) => {
-    setAngleImages((prev) => {
-      const newAngles = { ...prev }
-      if (newAngles[mainImageIndex]) {
-        const { [angleType]: removed, ...rest } = newAngles[mainImageIndex]
-        newAngles[mainImageIndex] = rest
-      }
-      return newAngles
-    })
-  }
-
-  const AngleUploadCard = ({
-    label,
-    imageUrl,
-    onUpload,
-    onRemove,
-  }: {
-    label: string
-    imageUrl?: string
-    onUpload: (file: File) => void
-    onRemove: () => void
-  }) => {
-    const inputRef = useRef<HTMLInputElement>(null)
-    const [isHovered, setIsHovered] = useState(false)
-
-    return (
-      <div className="relative flex flex-col items-center gap-1">
-        <input
-          ref={inputRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={(e) => {
-            const file = e.target.files?.[0]
-            if (file) {
-              onUpload(file)
-            }
-            if (e.target) {
-              e.target.value = ""
-            }
-          }}
-        />
-        <button
-          onClick={() => inputRef.current?.click()}
-          onMouseEnter={() => setIsHovered(true)}
-          onMouseLeave={() => setIsHovered(false)}
-          className="w-full aspect-square border-2 border-dashed border-[#71717a] rounded-lg bg-white hover:border-[#FF5E1A] hover:bg-[#FF5E1A]/5 transition-colors flex items-center justify-center relative overflow-hidden"
-        >
-          {imageUrl ? (
-            <>
-              <img
-                src={imageUrl || "/placeholder.svg"}
-                alt={label}
-                className="w-full h-full object-cover absolute inset-0"
-              />
-              {isHovered && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onRemove()
-                  }}
-                  className="absolute inset-0 flex items-center justify-center bg-black/40 transition-opacity z-10"
-                >
-                  <div className="p-2 bg-black/60 hover:bg-black/80 rounded-full">
-                    <X className="h-4 w-4 text-white" />
-                  </div>
-                </button>
-              )}
-            </>
-          ) : (
-            <Plus className="h-5 w-5 text-[#71717a]" />
-          )}
-        </button>
-        <span className="text-xs text-[#71717a]">{label}</span>
-      </div>
-    )
-  }
-
   const handleResetApp = () => {
     setUploadedImages([])
     setGeneratedImages([])
@@ -963,9 +711,6 @@ const ImageToImagePage = () => {
     setShowGeneratingModal(false)
     setCountdown(55)
     setApiCompleted(false)
-    // Reset angles state
-    setExpandedAngles(new Set())
-    setAngleImages({})
   }
 
   const handlePreviousOriginalImage = () => {
@@ -1276,7 +1021,7 @@ const ImageToImagePage = () => {
                 </div>
               </div>
             ) : uploadedImages.length === 1 ? (
-              /* Single Image - Full Size with Angles */
+              /* Single Image - Full Size */
               <div className="w-full h-full relative">
                 <img
                   src={uploadedImages[0] || "/placeholder.svg"}
@@ -1289,38 +1034,6 @@ const ImageToImagePage = () => {
                 >
                   <X className="h-6 w-6 text-white" />
                 </button>
-
-                <div className="absolute bottom-4 left-4 flex flex-col items-start gap-2">
-                  {expandedAngles.has(0) && (
-                    <div className="flex flex-col gap-2 mb-2">
-                      {["Front", "Back", "Left", "Right"].map((angleType) => (
-                        <div key={angleType} className="w-16">
-                          <AngleUploadCard
-                            label={angleType}
-                            imageUrl={angleImages[0]?.[angleType]}
-                            onUpload={(file) => handleAngleImageUpload(0, angleType, file)}
-                            onRemove={() => removeAngleImage(0, angleType)}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <button
-                    onClick={() => toggleAngles(0)}
-                    className="p-3 bg-[#52525b] hover:bg-[#71717a] rounded-full transition-colors"
-                  >
-                    {expandedAngles.has(0) ? (
-                      <Minus className="h-5 w-5 text-white" />
-                    ) : (
-                      <Plus className="h-5 w-5 text-white" />
-                    )}
-                  </button>
-                  <div className="text-center">
-                    <div className="text-xs text-[#71717a] font-medium">Angles</div>
-                    <div className="text-[10px] text-[#71717a]">(Optional)</div>
-                  </div>
-                </div>
 
                 {/* Drag overlay for additional images */}
                 {isDragging && uploadedImages.length < 4 && (
@@ -1335,7 +1048,7 @@ const ImageToImagePage = () => {
                 )}
               </div>
             ) : (
-              /* Multiple Images - Grid Layout with Angles */
+              /* Multiple Images - Grid Layout */
               <div
                 className={`w-full h-full grid gap-2 p-4 ${
                   uploadedImages.length === 2
@@ -1347,7 +1060,9 @@ const ImageToImagePage = () => {
                   <div
                     key={index}
                     className={`relative rounded-lg overflow-hidden bg-[#f4f4f5] ${
-                      uploadedImages.length === 2 ? "" : getImageSpanClass(index, uploadedImages.length)
+                      uploadedImages.length === 2
+                        ? "" // Remove span class for vertical stacking
+                        : getImageSpanClass(index, uploadedImages.length)
                     }`}
                   >
                     <img
@@ -1357,42 +1072,10 @@ const ImageToImagePage = () => {
                     />
                     <button
                       onClick={() => removeImage(index)}
-                      className="absolute top-2 right-2 p-1 bg-black/50 hover:bg-black/70 rounded-full transition-colors z-10"
+                      className="absolute top-2 right-2 p-1 bg-black/50 hover:bg-black/70 rounded-full transition-colors"
                     >
                       <X className="h-4 w-4 text-white" />
                     </button>
-
-                    {!expandedAngles.has(index) ? (
-                      <button
-                        onClick={() => toggleAngles(index)}
-                        className="absolute bottom-2 right-2 px-3 py-1.5 bg-black/40 hover:bg-black/60 rounded-lg transition-colors z-10 flex items-center gap-1.5"
-                      >
-                        <Plus className="h-4 w-4 text-white" />
-                        <span className="text-white text-xs font-medium">Angles (Optional)</span>
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => toggleAngles(index)}
-                        className="absolute bottom-2 right-2 p-2 bg-black/40 hover:bg-black/60 rounded-full transition-colors z-10"
-                      >
-                        <Minus className="h-4 w-4 text-white" />
-                      </button>
-                    )}
-
-                    {expandedAngles.has(index) && (
-                      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-2 z-10">
-                        {["Front", "Back", "Left", "Right"].map((angleType) => (
-                          <div key={angleType} className="w-12">
-                            <AngleUploadCard
-                              label={angleType}
-                              imageUrl={angleImages[index]?.[angleType]}
-                              onUpload={(file) => handleAngleImageUpload(index, angleType, file)}
-                              onRemove={() => removeAngleImage(index, angleType)}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>
