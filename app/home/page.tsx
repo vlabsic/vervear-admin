@@ -43,6 +43,42 @@ export default function HomePage() {
               </Link>
             </div>
           </div>
+
+          {/* Footer Navigation */}
+          <div className="flex gap-12 text-gray-400">
+            <a
+              href="https://vervear.com/payasyougo"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-white transition-colors"
+            >
+              Pay as you go💰
+            </a>
+            <a
+              href="https://www.youtube.com/watch?v=FVEUskAK2IU"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-white transition-colors"
+            >
+              Tutorials 💻
+            </a>
+            <a
+              href="https://vervear.com/feedback"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-white transition-colors"
+            >
+              Feedback 📝
+            </a>
+            <a
+              href="https://vervear.com/contact"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-white transition-colors"
+            >
+              Contact 📞
+            </a>
+          </div>
         </div>
 
         {/* Right Side - Image */}
