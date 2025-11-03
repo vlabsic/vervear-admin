@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
       imageCount,
       furnitureCount: numFurniture,
       backgroundType,
-      includePropFurniture, // Log prop furniture setting
+      includePropFurniture,
     })
 
     if (furnitureImages.length === 0 || !prompt) {
@@ -31,7 +31,35 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const imageDataArray = furnitureImages.map((img: string) => img.split(",")[1])
+    const imageDataArray: Array<{ data: string; mimeType: string }> = []
+
+    for (let i = 0; i < furnitureImages.length; i++) {
+      const img = furnitureImages[i]
+
+      // Extract MIME type from data URL (e.g., "data:image/png;base64,...")
+      const mimeTypeMatch = img.match(/^data:([^;]+);base64,/)
+      const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : "image/jpeg"
+
+      // Validate MIME type
+      if (mimeType !== "image/jpeg" && mimeType !== "image/png") {
+        console.error(`[v0] Unsupported image format for image ${i}: ${mimeType}`)
+        return NextResponse.json(
+          { error: `Unsupported image format: ${mimeType}. Only JPEG and PNG are supported.` },
+          { status: 400 },
+        )
+      }
+
+      // Extract base64 data
+      const base64Data = img.split(",")[1]
+
+      if (!base64Data) {
+        console.error(`[v0] Failed to extract base64 data from image ${i}`)
+        return NextResponse.json({ error: `Invalid image data for image ${i}` }, { status: 400 })
+      }
+
+      imageDataArray.push({ data: base64Data, mimeType })
+      console.log(`[v0] Image ${i}: ${mimeType}, base64 length: ${base64Data.length}`)
+    }
 
     const backgroundContext = backgroundType ? `in a ${backgroundType.toLowerCase()} setting` : ""
     const environmentDescription = backgroundContext ? `${prompt} ${backgroundContext}` : prompt
@@ -155,12 +183,12 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
 
     const parts: any[] = [{ text: fullPrompt }]
 
-    // Add all furniture images to the request
-    imageDataArray.forEach((imageData: string) => {
+    imageDataArray.forEach((imageData, index) => {
+      console.log(`[v0] Adding image ${index} with MIME type: ${imageData.mimeType}`)
       parts.push({
         inline_data: {
-          mime_type: "image/jpeg",
-          data: imageData,
+          mime_type: imageData.mimeType,
+          data: imageData.data,
         },
       })
     })
@@ -189,13 +217,29 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
     )
 
     if (!response.ok) {
-      const errorData = await response.json()
-      console.error("[v0] Gemini API error:", JSON.stringify(errorData, null, 2))
+      const contentType = response.headers.get("content-type")
+      console.error(`[v0] Gemini API error - Status: ${response.status}, Content-Type: ${contentType}`)
+
+      let errorData
+      try {
+        if (contentType && contentType.includes("application/json")) {
+          errorData = await response.json()
+          console.error("[v0] Gemini API error (JSON):", JSON.stringify(errorData, null, 2))
+        } else {
+          const errorText = await response.text()
+          console.error("[v0] Gemini API error (non-JSON):", errorText)
+          errorData = { message: errorText }
+        }
+      } catch (parseError) {
+        console.error("[v0] Failed to parse error response:", parseError)
+        errorData = { message: "Failed to parse error response" }
+      }
+
       return NextResponse.json({ error: "Failed to generate image", details: errorData }, { status: response.status })
     }
 
     const data = await response.json()
-    console.log("[v0] Gemini API response:", JSON.stringify(data, null, 2))
+    console.log("[v0] Gemini API response received successfully")
 
     // Extract the generated image from the response
     if (data.candidates && data.candidates[0]?.content?.parts) {
