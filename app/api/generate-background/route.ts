@@ -155,15 +155,22 @@ Generate a photorealistic 1024x1024 pixel image with all ${numFurniture} furnitu
 
     const parts: any[] = [{ text: fullPrompt }]
 
-    // Add all furniture images to the request
-    imageDataArray.forEach((imageData: string) => {
+    // For multiple furniture pieces, the prompt already describes all of them
+    if (imageDataArray.length > 0) {
+      // Detect MIME type from the first image data URL
+      const firstImageData = furnitureImages[0]
+      const mimeTypeMatch = firstImageData.match(/^data:([^;]+);base64,/)
+      const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : "image/jpeg"
+
+      console.log(`[v0] Sending first furniture image as reference (MIME type: ${mimeType})`)
+
       parts.push({
         inline_data: {
-          mime_type: "image/jpeg",
-          data: imageData,
+          mime_type: mimeType,
+          data: imageDataArray[0],
         },
       })
-    })
+    }
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${apiKey}`,
